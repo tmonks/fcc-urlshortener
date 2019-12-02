@@ -3,9 +3,10 @@
 var express = require('express');
 var mongo = require('mongodb');
 var mongoose = require('mongoose');
-var bodyParser = require('body-parser');
-var validUrl = require('valid-url');
-var dns = require('dns');
+var bodyParser = require('body-parser'); // parsing of POST data
+var validUrl = require('valid-url'); // URL validation
+var dns = require('dns'); // DNS lookups
+var dnsPromises = dns.promises;
 
 var cors = require('cors');
 
@@ -14,21 +15,6 @@ var app = express();
 // Basic Configuration 
 var port = process.env.PORT || 3000;
 
-// Database config
-const dbConfig = { useNewUrlParser: true, useUnifiedTopology: true };
-mongoose.connect(process.env.MONGOLAB_URI, dbConfig);
-var db = mongoose.connection; 
-db.on('error', console.error.bind(console, 'connection error:'));
-db.once('open', function() {
-  console.log('Database connection successful');
-})
-
-const urlSchema = new mongoose.Schema({
-  tag: Number,
-  url: String,
-})
-const Url = mongoose.model('Url', urlSchema);
-
 app.use(cors());
 
 // mount the body-parser to handle POST body parsing
@@ -36,32 +22,12 @@ app.use(bodyParser.urlencoded({extended: false}));
 
 app.use('/public', express.static(process.cwd() + '/public'));
 
+// default page with form
 app.get('/', function(req, res){
   res.sendFile(process.cwd() + '/views/index.html');
 });
 
-  
-// your first API endpoint... 
-app.get("/api/hello", function (req, res) {
-  res.json({greeting: 'hello API'});
-});
-
-const getLatestUrlTag = () => {
-  var latestTag;
-  Url.find().sort({tag: -1}).limit(1).exec((err, results) => {
-    if(err) {
-      console.log("error finding last tag");
-    } else {
-      latestTag = results[0].tag;
-      console.log("Latest tag: " + latestTag);
-    }
-  });
-  return latestTag;
-}
-
-console.log("returned: " + getLatestUrlTag());
-
-// post requests to /api/shorturl/new
+// Save post requests to /api/shorturl/new
 app.post("/api/shorturl/new", function (req, res) {
   
   let url = req.body.url;
@@ -72,32 +38,76 @@ app.post("/api/shorturl/new", function (req, res) {
     res.json({"error": "invalid URL"});
     return;
   }
-    
+  
+  // extract the server name from the URL
   let matches = url.match(/https?:\/\/([a-zA-Z0-9-.]+)/);
-  let server = matches[1]; // extract the server name
-  console.log("New URL: " + url + " (" + server + ")");
+  let server = matches[1];
 
-  dns.lookup(server, (err, address, family) => {
-    if(err) {
-      console.log("Invalid server");
-      res.json({"error": "Invalid server"});
+  dnsPromises.lookup(server).then(result => { // CHECK DNS
+      console.log('DNS lookup successful: ' + result.address);
+      // determine the latest short_url
+      return Url.find().sort({short_url: -1}).limit(1).exec();
+  })
+  .then(results => { // SAVE URL TO DATABASE
+      // calculate the next short_url by adding 1
+      let newShort = results.length > 0 ? parseInt(results[0].short_url) + 1 : 1;
+      let newUrl = new Url({ original_url: url, short_url: newShort });
+      return newUrl.save();
+  })
+  .then(results => { // SEND SUCCESSFUL JSON RESPONSE
+      console.log("New URL successfully saved");
+      res.json({"original_url": results.original_url, "short_url": results.short_url});
+  })
+  .catch(err => { // CATCH AND SEND ERROR RESPONSES
+    if(err.code === 'ENOTFOUND') {
+      console.log("Error: server " + server + " not found");
+      res.json({"error": "Invalid server" });
     } else {
-      console.log('address: ' + address + " family: " + family);
-      var newUrl = new Url({ tag: 1, url: url });
-      newUrl.save((err, data) => {
-        if(err) {
-          console.log("error saving new URL to the db");
-        } else {
-          console.log("New URL successfully saved");
-        }
-      });
-      res.json({"status": "OK"});
+      console.log(err);
+      res.json({"error": err.toString() });
     }
   });
-    
   
 });
 
-app.listen(port, function () {
-  console.log('Node.js listening on port ' + port);
+// Redirect requests to short URLs to their corresponding original URL
+app.get("/api/shorturl/:short_url", (req, res) => {
+  console.log("Looking for short_url " + req.params.short_url);
+  Url.findOne({ short_url: req.params.short_url })
+    .then(results => { // short URL found, redirect to original
+      if(results) {
+        console.log("Redirecting /api/shorturl/" + req.params.short_url + " to " + results.original_url); 
+        res.redirect(results.original_url);
+      } else { // short URL not found, output an error message
+        res.send("<h2>Sorry, we're unable to find that URL</h2>");
+      }
+    }).catch(err => {
+      console.log("Error" + err);
+    });
 });
+
+// 404 error for anything else
+app.get("*", (req, res) => {
+  res.send("<h2>Error 404: Page not found</h2>");
+});
+
+// Database config
+const dbConfig = { useNewUrlParser: true, useUnifiedTopology: true };
+const urlSchema = new mongoose.Schema({
+  original_url: String,
+  short_url: Number
+})
+const Url = mongoose.model('Url', urlSchema);
+
+// connect databse
+mongoose
+  .connect(process.env.MONGOLAB_URI, dbConfig)
+  .then(result => {
+    // start server
+    app.listen(port, function () {
+      console.log('Database connected, server listening');
+    });
+  })
+  .catch(err => {
+    console.log(err);
+  });
