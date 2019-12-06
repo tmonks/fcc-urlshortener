@@ -31,10 +31,9 @@ app.get('/', function(req, res){
 app.post("/api/shorturl/new", function (req, res) {
   
   let url = req.body.url;
-
+  
   // Test URL and send an error if invalid
-  if(!validUrl.isUri(url)) {
-    console.log("Invalid URL: " + url);
+  if(!validUrl.isWebUri(url)) {
     res.json({"error": "invalid URL"});
     return;
   }
@@ -55,7 +54,6 @@ app.post("/api/shorturl/new", function (req, res) {
       return newUrl.save();
   })
   .then(results => { // SEND SUCCESSFUL JSON RESPONSE
-      console.log("New URL successfully saved");
       res.json({"original_url": results.original_url, "short_url": results.short_url});
   })
   .catch(err => { // CATCH AND SEND ERROR RESPONSES
@@ -67,7 +65,6 @@ app.post("/api/shorturl/new", function (req, res) {
       res.json({"error": err.toString() });
     }
   });
-  
 });
 
 // Redirect requests to short URLs to their corresponding original URL
@@ -79,7 +76,7 @@ app.get("/api/shorturl/:short_url", (req, res) => {
         console.log("Redirecting /api/shorturl/" + req.params.short_url + " to " + results.original_url); 
         res.redirect(results.original_url);
       } else { // short URL not found, output an error message
-        res.send("<h2>Sorry, we're unable to find that URL</h2>");
+        res.json({"error": "short URL not found"})
       }
     }).catch(err => {
       console.log("Error" + err);
